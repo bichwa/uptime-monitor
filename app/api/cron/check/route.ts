@@ -39,10 +39,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ checked: 0 });
   }
 
-  // Check all due monitors in parallel
-  await Promise.all(due.map((monitor) => processMonitor(monitor, now)));
+  // Check due monitors with a concurrency limit.
+  // Each URL check has a 10s timeout and maxDuration is 60s, so running
+  // more than ~5 at once risks the function timing out before all checks
+  // complete. 5 concurrent checks supports up to ~25 monitors per tick
+  // (5 batches × 10s = 50s), well within the 60s limit.
+  await runWithConcurrency(5, due, (monitor) => processMonitor(monitor, now));
 
   return NextResponse.json({ checked: due.length });
+}
+
+async function runWithConcurrency<T>(
+  limit: number,
+  items: T[],
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  const queue = [...items];
+  async function worker() {
+    while (queue.length > 0) {
+      const item = queue.shift()!;
+      await fn(item);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 async function processMonitor(monitor: Monitor, now: Date) {
